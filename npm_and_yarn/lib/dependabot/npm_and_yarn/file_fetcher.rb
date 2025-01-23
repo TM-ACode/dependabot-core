@@ -213,7 +213,7 @@ module Dependabot
 
       sig { returns(T.nilable(T.any(Integer, String))) }
       def bun_version
-        return @bun_version = nil unless allow_beta_ecosystems? || Experiments.enabled?(:bun_updates)
+        return @bun_version = nil unless allow_beta_ecosystems?
 
         @bun_version ||= T.let(
           package_manager_helper.setup(BunPackageManager::NAME),
@@ -453,6 +453,15 @@ module Dependabot
 
         resolution_deps = resolution_objects.flat_map(&:to_a)
                                             .map do |path, value|
+          # skip dependencies that contain invalid values such as inline comments, null, etc.
+
+          unless value.is_a?(String)
+            Dependabot.logger.warn("File fetcher: Skipping dependency \"#{path}\" " \
+                                   "with value: \"#{value}\"")
+
+            next
+          end
+
           convert_dependency_path_to_name(path, value)
         end
 
@@ -645,8 +654,8 @@ module Dependabot
       def parsed_pnpm_workspace_yaml
         return {} unless pnpm_workspace_yaml
 
-        YAML.safe_load(T.must(T.must(pnpm_workspace_yaml).content))
-      rescue Psych::SyntaxError
+        YAML.safe_load(T.must(T.must(pnpm_workspace_yaml).content), aliases: true)
+      rescue Psych::SyntaxError, Psych::BadAlias
         raise Dependabot::DependencyFileNotParseable, T.must(pnpm_workspace_yaml).path
       end
 
