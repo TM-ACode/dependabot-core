@@ -11,7 +11,7 @@ require "sorbet-runtime"
 
 module Dependabot
   module NpmAndYarn
-    class FileUpdater < Dependabot::FileUpdaters::Base
+    class FileUpdater < Dependabot::FileUpdaters::Base # rubocop:disable Metrics/ClassLength
       extend T::Sig
 
       require_relative "file_updater/package_json_updater"
@@ -19,6 +19,7 @@ module Dependabot
       require_relative "file_updater/yarn_lockfile_updater"
       require_relative "file_updater/pnpm_lockfile_updater"
       require_relative "file_updater/bun_lockfile_updater"
+      require_relative "file_updater/pnpm_workspace_updater"
 
       class NoChangeError < StandardError
         extend T::Sig
@@ -43,6 +44,7 @@ module Dependabot
           %r{^(?:.*/)?npm-shrinkwrap\.json$},
           %r{^(?:.*/)?yarn\.lock$},
           %r{^(?:.*/)?pnpm-lock\.yaml$},
+          %r{^(?:.*/)?pnpm-workspace\.yaml$},
           %r{^(?:.*/)?\.yarn/.*}, # Matches any file within the .yarn/ directory
           %r{^(?:.*/)?\.pnp\.(?:js|cjs)$} # Matches .pnp.js or .pnp.cjs files
         ]
@@ -54,7 +56,11 @@ module Dependabot
         updated_files = T.let([], T::Array[DependencyFile])
 
         updated_files += updated_manifest_files
-        updated_files += updated_lockfiles
+        updated_files += if should_update_pnpm_workspace?
+                           update_pnpm_workspace_and_locks
+                         else
+                           updated_lockfiles
+                         end
 
         if updated_files.none?
 
@@ -92,6 +98,33 @@ module Dependabot
       # rubocop:enable Metrics/PerceivedComplexity
 
       private
+
+      sig { returns(T::Boolean) }
+      def should_update_pnpm_workspace?
+        Dependabot::Experiments.enabled?(:enable_pnpm_workspace_catalog) && pnpm_workspace.any?
+      end
+
+      sig { returns(T::Array[Dependabot::DependencyFile]) }
+      def update_pnpm_workspace_and_locks
+        workspace_updates = updated_pnpm_workspace_files
+        lock_updates = update_pnpm_locks(is_catalog: true)
+
+        workspace_updates + lock_updates
+      end
+
+      sig { params(is_catalog: T::Boolean).returns(T::Array[Dependabot::DependencyFile]) }
+      def update_pnpm_locks(is_catalog: false)
+        updated_files = []
+        pnpm_locks.each do |pnpm_lock|
+          next unless pnpm_lock_changed?(pnpm_lock, is_catalog: is_catalog)
+
+          updated_files << updated_file(
+            file: pnpm_lock,
+            content: updated_pnpm_lock_content(pnpm_lock, is_catalog: is_catalog)
+          )
+        end
+        updated_files
+      end
 
       sig { params(updated_files: T::Array[Dependabot::DependencyFile]).returns(T::Array[Dependabot::DependencyFile]) }
       def vendor_updated_files(updated_files)
@@ -209,6 +242,15 @@ module Dependabot
       end
 
       sig { returns(T::Array[Dependabot::DependencyFile]) }
+      def pnpm_workspace
+        @pnpm_workspace ||= T.let(
+          filtered_dependency_files
+          .select { |f| f.name.end_with?("pnpm-workspace.yaml") },
+          T.nilable(T::Array[Dependabot::DependencyFile])
+        )
+      end
+
+      sig { returns(T::Array[Dependabot::DependencyFile]) }
       def bun_locks
         @bun_locks ||= T.let(
           filtered_dependency_files
@@ -240,9 +282,9 @@ module Dependabot
         yarn_lock.content != updated_yarn_lock_content(yarn_lock)
       end
 
-      sig { params(pnpm_lock: Dependabot::DependencyFile).returns(T::Boolean) }
-      def pnpm_lock_changed?(pnpm_lock)
-        pnpm_lock.content != updated_pnpm_lock_content(pnpm_lock)
+      sig { params(pnpm_lock: Dependabot::DependencyFile, is_catalog: T::Boolean).returns(T::Boolean) }
+      def pnpm_lock_changed?(pnpm_lock, is_catalog: false)
+        pnpm_lock.content != updated_pnpm_lock_content(pnpm_lock, is_catalog: is_catalog)
       end
 
       sig { params(bun_lock: Dependabot::DependencyFile).returns(T::Boolean) }
@@ -270,8 +312,16 @@ module Dependabot
         end
       end
 
-      # rubocop:disable Metrics/MethodLength
-      # rubocop:disable Metrics/PerceivedComplexity
+      sig { returns(T::Array[Dependabot::DependencyFile]) }
+      def updated_pnpm_workspace_files
+        pnpm_workspace.filter_map do |file|
+          updated_content = updated_pnpm_workspace_content(file)
+          next if updated_content == file.content
+
+          updated_file(file: file, content: T.must(updated_content))
+        end
+      end
+
       sig { returns(T::Array[Dependabot::DependencyFile]) }
       def updated_lockfiles
         updated_files = []
@@ -285,14 +335,7 @@ module Dependabot
           )
         end
 
-        pnpm_locks.each do |pnpm_lock|
-          next unless pnpm_lock_changed?(pnpm_lock)
-
-          updated_files << updated_file(
-            file: pnpm_lock,
-            content: updated_pnpm_lock_content(pnpm_lock)
-          )
-        end
+        updated_files.concat(update_pnpm_locks)
 
         bun_locks.each do |bun_lock|
           next unless bun_lock_changed?(bun_lock)
@@ -323,9 +366,6 @@ module Dependabot
 
         updated_files
       end
-      # rubocop:enable Metrics/MethodLength
-      # rubocop:enable Metrics/PerceivedComplexity
-
       sig { params(yarn_lock: Dependabot::DependencyFile).returns(String) }
       def updated_yarn_lock_content(yarn_lock)
         @updated_yarn_lock_content ||= T.let({}, T.nilable(T::Hash[String, T.nilable(String)]))
@@ -333,11 +373,16 @@ module Dependabot
           yarn_lockfile_updater.updated_yarn_lock_content(yarn_lock)
       end
 
-      sig { params(pnpm_lock: Dependabot::DependencyFile).returns(String) }
-      def updated_pnpm_lock_content(pnpm_lock)
+      sig do
+        params(
+          pnpm_lock: Dependabot::DependencyFile,
+          is_catalog: T::Boolean
+        ).returns(String)
+      end
+      def updated_pnpm_lock_content(pnpm_lock, is_catalog: false)
         @updated_pnpm_lock_content ||= T.let({}, T.nilable(T::Hash[String, T.nilable(String)]))
         @updated_pnpm_lock_content[pnpm_lock.name] ||=
-          pnpm_lockfile_updater.updated_pnpm_lock_content(pnpm_lock)
+          pnpm_lockfile_updater.updated_pnpm_lock_content(pnpm_lock, is_catalog)
       end
 
       sig { params(bun_lock: Dependabot::DependencyFile).returns(String) }
@@ -406,6 +451,19 @@ module Dependabot
             package_json: file,
             dependencies: dependencies
           ).updated_package_json.content
+      end
+
+      sig do
+        params(file: Dependabot::DependencyFile)
+          .returns(T.nilable(String))
+      end
+      def updated_pnpm_workspace_content(file)
+        @updated_pnpm_workspace_content ||= T.let({}, T.nilable(T::Hash[String, T.nilable(String)]))
+        @updated_pnpm_workspace_content[file.name] ||=
+          PnpmWorkspaceUpdater.new(
+            workspace_file: file,
+            dependencies: dependencies
+          ).updated_pnpm_workspace.content
       end
     end
   end
