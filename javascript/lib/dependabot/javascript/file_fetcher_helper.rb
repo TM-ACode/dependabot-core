@@ -58,7 +58,7 @@ module Dependabot
         end
 
         [
-          *package_json_path_deps,
+          *package_json_path_deps
         ].uniq
       end
 
