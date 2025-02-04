@@ -133,6 +133,16 @@ module Dependabot
           end
         end
       end
+
+      sig { override.returns(T::Array[Dependabot::Dependency]) }
+      def parse
+        []
+      end
+
+      private
+
+      sig { override.void }
+      def check_required_files; end
     end
   end
 end

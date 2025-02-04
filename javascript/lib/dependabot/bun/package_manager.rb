@@ -10,8 +10,8 @@ module Dependabot
 
       # In Bun 1.1.39, the lockfile format was changed from a binary bun.lockb to a text-based bun.lock.
       # https://bun.sh/blog/bun-lock-text-lockfile
-      MIN_SUPPORTED_VERSION = T.let(Version.new("1.1.39"), Version)
-      SUPPORTED_VERSIONS = T.let([MIN_SUPPORTED_VERSION].freeze, T::Array[Version])
+      MIN_SUPPORTED_VERSION = T.let(Version.new("1.1.39"), Javascript::Version)
+      SUPPORTED_VERSIONS = T.let([MIN_SUPPORTED_VERSION].freeze, T::Array[Javascript::Version])
       DEPRECATED_VERSIONS = T.let([].freeze, T::Array[Version])
 
       sig do
