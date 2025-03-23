@@ -1,8 +1,9 @@
 module github.com/dependabot/dependabot-core/go_modules/helpers
 
 go 1.20
+toolchain go1.24.1
 
 require (
 	github.com/Masterminds/vcs v1.13.3
-	golang.org/x/mod v0.19.0
+	golang.org/x/mod v0.24.0
 )
